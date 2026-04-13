@@ -169,7 +169,7 @@ sequenceDiagram
   salesRegionDesc: string,  // 销售地区描述
   amountExclTax: string,    // 订单不含税金额合计
   totalAmountCNY: string,   // 合同总金额(CNY)
-  totalAmountOrder: string, // 合同总金额(订单货币)
+  totalAmountOrder: string, // 合同总金额
   amount: string,           // 金额（用于列表展示和查询）
   currency: string,         // 货币
   channelDesc: string,      // 分销渠道描述

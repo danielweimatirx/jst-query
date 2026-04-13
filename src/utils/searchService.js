@@ -133,13 +133,24 @@ export function executeSearch(parseResult, orders, documents) {
     };
   }
 
-  // 分离 order 条件和 document 条件
+  // 分离 order 条件、document 条件和全文关键词条件
+  const fulltextConditions = conditions.filter(c => c.table === 'fulltext');
   const orderConditions = conditions.filter(c => c.table === 'order');
   const docConditions = conditions.filter(c => c.table === 'document');
 
-  // 用 order 条件过滤
+  // 全文关键词搜索：在订单所有文本字段中匹配
   let filteredOrders = orders;
-  if (orderConditions.length > 0) {
+  if (fulltextConditions.length > 0) {
+    const keyword = String(fulltextConditions[0].value);
+    filteredOrders = orders.filter(order => {
+      const texts = [order.orderNo, order.title, order.customer, order.poDate,
+        order.salesRegionDesc, order.salesRepDesc, order.industryDesc, order.holdingCompany].filter(Boolean);
+      const orderDocs = documents.filter(d => d.orderNo === order.orderNo);
+      orderDocs.forEach(d => { texts.push(d.name, d.tag); });
+      return texts.some(t => String(t).includes(keyword));
+    });
+  } else if (orderConditions.length > 0) {
+    // 用 order 条件过滤
     filteredOrders = orders.filter(order =>
       orderConditions.every(cond => matchCondition(order, cond))
     );
@@ -439,6 +450,294 @@ function executeAggregation(aggConfig, orders, documents, parseResult) {
     aggregation,
     orderColumns: DEFAULT_ORDER_COLUMNS,
     queryFocus: queryFocus || null,
+  };
+}
+
+/**
+ * 销售订单条件字段到采购订单字段的映射
+ */
+const SALES_TO_PURCHASE_FIELD_MAP = {
+  orderNo: 'purchaseOrderNo',
+  customer: 'supplier',
+  poDate: 'purchaseDate',
+  amount: 'purchaseAmount',
+  title: 'description',
+};
+
+/**
+ * 将销售维度的条件映射为采购维度的条件
+ */
+function mapConditionToPurchase(condition) {
+  const mappedField = SALES_TO_PURCHASE_FIELD_MAP[condition.field];
+  if (!mappedField) return null;
+  return { ...condition, field: mappedField, table: 'order' };
+}
+
+/**
+ * 执行采购单维度检索
+ */
+function executePurchaseSearch(parseResult, purchaseOrderTable, purchaseDocumentTable) {
+  if (!purchaseOrderTable || purchaseOrderTable.length === 0) {
+    return { orders: [], total: 0, summary: '暂无数据' };
+  }
+
+  const { conditions, queryType } = parseResult;
+
+  // 聚合查询时采购维度返回空结果
+  if (queryType === 'aggregation') {
+    return { orders: [], total: 0, summary: '聚合查询暂不支持采购单维度' };
+  }
+
+  const attachPurchaseDocuments = (orderList) =>
+    orderList.map(order => ({
+      ...order,
+      documents: (purchaseDocumentTable || []).filter(doc => doc.purchaseOrderNo === order.purchaseOrderNo),
+    }));
+
+  // 无条件 → 返回全量
+  if (!conditions || conditions.length === 0) {
+    const allOrders = attachPurchaseDocuments(purchaseOrderTable);
+    return {
+      orders: allOrders,
+      total: allOrders.length,
+      summary: `共有 ${allOrders.length} 条采购订单记录。`,
+    };
+  }
+
+  // 分离 order 条件、document 条件和全文关键词条件
+  const fulltextConditions = conditions.filter(c => c.table === 'fulltext');
+  const orderConditions = conditions.filter(c => c.table === 'order');
+  const docConditions = conditions.filter(c => c.table === 'document');
+
+  // 全文关键词搜索
+  let filteredOrders = purchaseOrderTable;
+  if (fulltextConditions.length > 0) {
+    const keyword = String(fulltextConditions[0].value);
+    filteredOrders = purchaseOrderTable.filter(order => {
+      const texts = [order.purchaseOrderNo, order.supplier, order.purchaseDate,
+        order.purchaseAmount, order.purchaseType, order.description, order.relatedSalesOrder].filter(Boolean);
+      const orderDocs = (purchaseDocumentTable || []).filter(d => d.purchaseOrderNo === order.purchaseOrderNo);
+      orderDocs.forEach(d => { texts.push(d.name, d.tag); });
+      return texts.some(t => String(t).includes(keyword));
+    });
+  } else {
+    // 将 order 条件映射为采购字段
+    const mappedOrderConditions = orderConditions
+      .map(mapConditionToPurchase)
+      .filter(Boolean);
+
+    // 用映射后的条件过滤采购订单
+    if (mappedOrderConditions.length > 0) {
+      filteredOrders = purchaseOrderTable.filter(order =>
+        mappedOrderConditions.every(cond => matchCondition(order, cond))
+      );
+    }
+  }
+
+  // 用 document 条件过滤（tag 匹配采购单据的 tag）
+  if (docConditions.length > 0 && purchaseDocumentTable && purchaseDocumentTable.length > 0) {
+    const matchingOrderNos = new Set();
+    purchaseDocumentTable.forEach(doc => {
+      if (docConditions.every(cond => matchCondition(doc, cond))) {
+        matchingOrderNos.add(doc.purchaseOrderNo);
+      }
+    });
+    filteredOrders = filteredOrders.filter(order => matchingOrderNos.has(order.purchaseOrderNo));
+  }
+
+  const resultOrders = attachPurchaseDocuments(filteredOrders);
+
+  if (resultOrders.length === 0) {
+    return {
+      orders: [],
+      total: 0,
+      summary: `根据查询条件，未找到匹配的采购订单记录。`,
+    };
+  }
+
+  return {
+    orders: resultOrders,
+    total: resultOrders.length,
+    summary: `共检索到 ${resultOrders.length} 条采购订单记录。`,
+  };
+}
+
+/**
+ * 执行单据本身维度检索
+ */
+function executeDocumentDimensionSearch(parseResult, standaloneDocumentTable) {
+  if (!standaloneDocumentTable || standaloneDocumentTable.length === 0) {
+    return { documents: [], total: 0, summary: '暂无数据' };
+  }
+
+  const { conditions, queryType } = parseResult;
+
+  // 聚合查询时单据维度返回空结果
+  if (queryType === 'aggregation') {
+    return { documents: [], total: 0, summary: '聚合查询暂不支持单据维度' };
+  }
+
+  // 无条件 → 返回全量
+  if (!conditions || conditions.length === 0) {
+    return {
+      documents: [...standaloneDocumentTable],
+      total: standaloneDocumentTable.length,
+      summary: `共有 ${standaloneDocumentTable.length} 份独立单据。`,
+    };
+  }
+
+  const fulltextConditions = conditions.filter(c => c.table === 'fulltext');
+  const docConditions = conditions.filter(c => c.table === 'document');
+  const orderConditions = conditions.filter(c => c.table === 'order');
+
+  let filtered = [...standaloneDocumentTable];
+
+  // 全文关键词搜索：在 fileName + docCategory + structuredFields 所有值中匹配
+  if (fulltextConditions.length > 0) {
+    const keyword = String(fulltextConditions[0].value);
+    filtered = filtered.filter(doc => {
+      const texts = [doc.fileName, doc.docCategory, doc.fileFormat];
+      if (doc.structuredFields) {
+        Object.values(doc.structuredFields).forEach(v => texts.push(String(v)));
+      }
+      return texts.some(t => String(t).includes(keyword));
+    });
+  } else {
+    // 用 document 条件过滤（tag → docCategory）
+    if (docConditions.length > 0) {
+      filtered = filtered.filter(doc =>
+        docConditions.some(cond => {
+          if (cond.field === 'tag') {
+            return String(doc.docCategory) === String(cond.value);
+          }
+          return false;
+        })
+      );
+    }
+
+    // 用 order 条件匹配 fileName + structuredFields 的所有值
+    if (orderConditions.length > 0) {
+    filtered = filtered.filter(doc => {
+      // 收集所有可搜索文本：fileName + structuredFields 所有值
+      const searchableTexts = [String(doc.fileName), String(doc.docCategory)];
+      if (doc.structuredFields) {
+        Object.values(doc.structuredFields).forEach(v => searchableTexts.push(String(v)));
+      }
+      const allText = searchableTexts.join(' ');
+
+      return orderConditions.some(cond => {
+        const val = String(cond.value);
+        if (cond.operator === 'contains' || cond.operator === 'eq') {
+          return allText.includes(val);
+        }
+        // 金额条件：尝试匹配 structuredFields 中的数值字段
+        if (cond.field === 'amount' && doc.structuredFields) {
+          const numericValues = Object.values(doc.structuredFields)
+            .map(v => parseFloat(String(v).replace(/[,，]/g, '')))
+            .filter(n => !isNaN(n));
+          if (cond.operator === 'gt') return numericValues.some(n => n > toNumber(cond.value));
+          if (cond.operator === 'gte') return numericValues.some(n => n >= toNumber(cond.value));
+          if (cond.operator === 'lt') return numericValues.some(n => n < toNumber(cond.value));
+          if (cond.operator === 'lte') return numericValues.some(n => n <= toNumber(cond.value));
+        }
+        // 时间条件：尝试匹配 structuredFields 中的日期字段
+        if (cond.field === 'poDate' && doc.structuredFields) {
+          const dateValues = Object.values(doc.structuredFields)
+            .filter(v => /^\d{4}-\d{2}-\d{2}$/.test(String(v)));
+          if (dateValues.length > 0) {
+            return dateValues.some(d => {
+              if (cond.operator === 'gte') return d >= String(cond.value);
+              if (cond.operator === 'lte') return d <= String(cond.value);
+              if (cond.operator === 'lt') return d < String(cond.value);
+              return false;
+            });
+          }
+        }
+        return false;
+      });
+    });
+    }
+  }
+
+  if (filtered.length === 0) {
+    return {
+      documents: [],
+      total: 0,
+      summary: `根据查询条件，未找到匹配的独立单据。`,
+    };
+  }
+
+  return {
+    documents: filtered,
+    total: filtered.length,
+    summary: `共检索到 ${filtered.length} 份独立单据。`,
+  };
+}
+
+/**
+ * 生成综合摘要，包含各维度命中数量
+ */
+function buildOverallSummary(salesResult, purchaseResult, documentResult) {
+  const parts = [];
+  const salesTotal = salesResult.total || 0;
+  const purchaseTotal = purchaseResult.total || 0;
+  const documentTotal = documentResult.total || 0;
+
+  const dimensionParts = [];
+  if (salesTotal > 0) {
+    dimensionParts.push(`销售订单 ${salesTotal} 条`);
+  } else {
+    dimensionParts.push(`销售订单 0 条`);
+  }
+  if (purchaseTotal > 0) {
+    dimensionParts.push(`采购单 ${purchaseTotal} 条`);
+  } else {
+    dimensionParts.push(`采购单 0 条`);
+  }
+  if (documentTotal > 0) {
+    dimensionParts.push(`单据 ${documentTotal} 份`);
+  } else {
+    dimensionParts.push(`单据 0 份`);
+  }
+
+  const totalHits = salesTotal + purchaseTotal + documentTotal;
+  if (totalHits > 0) {
+    parts.push(`共检索到${dimensionParts.join('，')}。`);
+  } else {
+    parts.push(`未找到匹配的记录（${dimensionParts.join('，')}）。`);
+  }
+
+  return parts.join('');
+}
+
+/**
+ * 多维度检索入口
+ * @param {import('./queryParser').ParseResult} parseResult
+ * @param {Object[]} orderTable - 销售订单主表
+ * @param {Object[]} documentTable - 销售单据关联表
+ * @param {Object[]} purchaseOrderTable - 采购订单主表
+ * @param {Object[]} purchaseDocumentTable - 采购单据关联表
+ * @param {Object[]} standaloneDocumentTable - 独立单据表
+ * @returns {MultiDimensionResult}
+ */
+export function executeMultiDimensionSearch(parseResult, orderTable, documentTable, purchaseOrderTable, purchaseDocumentTable, standaloneDocumentTable) {
+  // 1. 销售订单维度：复用现有 executeSearch
+  const salesResult = executeSearch(parseResult, orderTable || [], documentTable || []);
+
+  // 2. 采购单维度
+  const purchaseResult = executePurchaseSearch(parseResult, purchaseOrderTable, purchaseDocumentTable);
+
+  // 3. 单据本身维度
+  const documentResult = executeDocumentDimensionSearch(parseResult, standaloneDocumentTable);
+
+  // 4. 生成综合摘要
+  const overallSummary = buildOverallSummary(salesResult, purchaseResult, documentResult);
+
+  return {
+    sales: salesResult,
+    purchase: purchaseResult,
+    document: documentResult,
+    overallSummary,
   };
 }
 

@@ -14,10 +14,24 @@
  * @property {string} description
  */
 
-// 已知的文件标签类型
+// 已知的文件标签类型（涵盖销售单、采购单、单据本身三个维度的所有类型）
 const KNOWN_DOC_TAGS = [
-  '合同', '发票', '中标通知书', '运行证明', '运输单', '通电验收单',
-  '年度合作协议', '框架协议', '报价单', '到货签收单', '竣工决算单',
+  // --- 销售单维度类型 ---
+  '合同', '发票', '通电验收单', '运行证明', '中标通知书',
+  '技术协议', '应收催收单', '竣工验收单', '拣配单', '代付协议',
+  '产品退货单', '装箱清单', '出口报关单', '其他',
+  '银行回单', '承兑汇票收付回单', '报销发票',
+  // --- 采购单维度类型 ---
+  '采购发票', '采购合同', '供应商出厂检验报告', '原材料外购直发签收单',
+  '到货验收单', '预验收单', '最终验收单', '入库单', '资产验收报告',
+  '应付账款函证相关单据-对账单', '应付账款函证相关单据-应收询证函',
+  // --- 单据本身维度类型 ---
+  '诉讼文件', '综合财务分析指标', '财务报表主表（盖章）', '年度审计报告',
+  'IT审计报告', '验资报告', '政府补助文件/政府项目专项审计报告',
+  '信用评级', '资产评估报告', '纳税申报表', '完税凭证', '纳税信用等级证明',
+  '无欠税证明', '研发加计扣除报告', '同期资料鉴定报告', '高新审计报告',
+  '担保协议', '授信协议', '借款协议', '凭证入账支持文件',
+  '采购框架协议、质量协议',
 ];
 
 // 字段中文名到英文字段名的映射
@@ -37,6 +51,12 @@ const FIELD_MAP = {
   '控股方': 'holdingCompany',
   '行业': 'industryDesc',
   '用户行业': 'industryDesc',
+  '供应商': 'supplier',
+  '供应商名称': 'supplier',
+  '采购日期': 'purchaseDate',
+  '采购金额': 'purchaseAmount',
+  '采购类型': 'purchaseType',
+  '采购订单号': 'purchaseOrderNo',
 };
 
 /**
@@ -84,6 +104,19 @@ export function parseQuery(question) {
 
   // 7. 解析其他字段关键词
   parseFieldKeywords(q, conditions, descParts);
+
+  // 8. 兜底：如果没有解析出任何条件，提取有意义的关键词
+  if (conditions.length === 0 && q.length > 0) {
+    // 去掉常见的无意义词，提取核心关键词
+    const stopWords = ['的', '相关', '有关', '所有', '全部', '哪些', '什么', '查询', '查找', '搜索', '检索', '请', '帮我', '找', '看看', '列出', '显示', '单据', '文件', '文档', '资料', '信息', '数据', '记录', '列表', '明细'];
+    let keyword = q;
+    stopWords.forEach(w => { keyword = keyword.replace(new RegExp(w, 'g'), ''); });
+    keyword = keyword.trim();
+    if (keyword.length > 0) {
+      conditions.push({ field: 'keyword', operator: 'contains', value: keyword, table: 'fulltext' });
+      descParts.push(`关键词「${keyword}」`);
+    }
+  }
 
   // 检测查询焦点：用户关注的是什么类型的信息
   const docFocus = KNOWN_DOC_TAGS.filter(tag => q.includes(tag));

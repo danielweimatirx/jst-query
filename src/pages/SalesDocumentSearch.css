@@ -801,3 +801,41 @@
   color: #0958d9;
   border: 1px solid #91caff;
 }
+
+
+/* ========== 多维度 Tabs 样式 (Task 6.2) ========== */
+.search-results-panel .ant-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.search-results-panel .ant-tabs-nav {
+  margin: 0;
+  padding: 0 16px;
+  border-bottom: 1px solid #e8e8e8;
+  flex-shrink: 0;
+}
+
+.search-results-panel .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.search-results-panel .ant-tabs-content {
+  height: 100%;
+}
+
+.search-results-panel .ant-tabs-tabpane {
+  height: 100%;
+}
+
+.search-results-panel .ant-tabs-tabpane > div {
+  height: 100%;
+}
+
+/* Tab 内部的 results-header 不需要额外的上边框 */
+.search-results-panel .ant-tabs-tabpane .results-header {
+  border-top: none;
+}
